@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Character Generator</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <h1>Character Generator</h1>
+    </div>
+    <div class="header-right">
+      <span id="api-status" class="status-dot offline" title="API Key not set"></span>
+      <button class="btn btn-sm" onclick="showSettings()">Settings</button>
+    </div>
+  </header>
+
+  <div class="app-layout">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h2>Characters</h2>
+        <button class="btn btn-accent btn-sm" onclick="newCharacter()">+ New</button>
+      </div>
+      <ul id="character-list" class="character-list"></ul>
+    </aside>
+
+    <!-- Main content -->
+    <main id="main-content">
+      <div id="empty-state" class="empty-state">
+        <p>Select a character or create a new one to get started.</p>
+      </div>
+
+      <div id="editor" class="editor hidden">
+        <!-- Tabs -->
+        <div class="tabs">
+          <button class="tab active" data-tab="identity" onclick="switchTab('identity')">Identity</button>
+          <button class="tab" data-tab="references" onclick="switchTab('references')">References <span id="ref-badge" class="badge">0</span></button>
+          <button class="tab" data-tab="variations" onclick="switchTab('variations')">Variations <span id="var-badge" class="badge">0</span></button>
+          <button class="tab" data-tab="generate" onclick="switchTab('generate')">Generate</button>
+          <button class="tab" data-tab="gallery" onclick="switchTab('gallery')">Gallery <span id="gallery-badge" class="badge">0</span></button>
+        </div>
+
+        <!-- Identity Tab -->
+        <div id="tab-identity" class="tab-content active">
+          <div class="form-grid">
+            <div class="form-group full">
+              <label>Character Name</label>
+              <input type="text" id="char-name" placeholder="e.g. luna">
+            </div>
+            <div class="form-section full">
+              <h3>Identity Traits</h3>
+              <p class="hint">Structured fields for programmatic control. These auto-build the core description.</p>
+            </div>
+            <div class="form-group">
+              <label>Age</label>
+              <input type="number" id="id-age" placeholder="24">
+            </div>
+            <div class="form-group">
+              <label>Hair</label>
+              <input type="text" id="id-hair" placeholder="long wavy red hair">
+            </div>
+            <div class="form-group">
+              <label>Eyes</label>
+              <input type="text" id="id-eyes" placeholder="bright green eyes">
+            </div>
+            <div class="form-group">
+              <label>Skin</label>
+              <input type="text" id="id-skin" placeholder="fair skin with freckles">
+            </div>
+            <div class="form-group">
+              <label>Body</label>
+              <input type="text" id="id-body" placeholder="athletic curvy build">
+            </div>
+            <div class="form-group">
+              <label>Face</label>
+              <input type="text" id="id-face" placeholder="heart-shaped face, full lips">
+            </div>
+            <div class="form-group full">
+              <label>Core Description <span class="hint">(auto-generated from traits, or write manually)</span></label>
+              <textarea id="char-core" rows="3" placeholder="A 24-year-old woman with long wavy red hair..."></textarea>
+            </div>
+            <div class="form-group full">
+              <label>Style</label>
+              <input type="text" id="char-style" placeholder="photorealistic Instagram photography, shot on Canon R5, 85mm lens">
+            </div>
+            <div class="form-group full">
+              <label>Negative (avoid)</label>
+              <input type="text" id="char-negative" placeholder="watermarks, text overlays, anime style, extra fingers">
+            </div>
+            <div class="form-group full">
+              <label>Tags <span class="hint">(comma-separated)</span></label>
+              <input type="text" id="char-tags" placeholder="instagram, model, lifestyle">
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="btn btn-accent" onclick="saveCharacter()">Save Character</button>
+            <button class="btn btn-danger" onclick="deleteCharacter()">Delete</button>
+          </div>
+        </div>
+
+        <!-- References Tab -->
+        <div id="tab-references" class="tab-content">
+          <div class="ref-info">
+            <p>Reference images anchor the character's visual identity. Upload 3-8 consistent photos for best results.</p>
+            <p class="hint">When references are present, generation uses the image edit API with high input fidelity for better consistency.</p>
+          </div>
+          <div id="ref-dropzone" class="dropzone">
+            <p>Drag & drop images here, or click to browse</p>
+            <p class="hint">PNG, JPG, WebP accepted</p>
+            <input type="file" id="ref-file-input" multiple accept=".png,.jpg,.jpeg,.webp" class="hidden">
+          </div>
+          <div id="ref-grid" class="ref-grid"></div>
+        </div>
+
+        <!-- Variations Tab -->
+        <div id="tab-variations" class="tab-content">
+          <div class="var-toolbar">
+            <button class="btn btn-sm" onclick="addVariationRow()">+ Add Row</button>
+            <button class="btn btn-sm" onclick="enableAllRows()">Enable All</button>
+            <button class="btn btn-sm" onclick="disableAllRows()">Disable All</button>
+            <span class="var-toolbar-sep"></span>
+            <button class="btn btn-sm" onclick="importCSV()">Import CSV</button>
+            <button class="btn btn-sm" onclick="exportCSV()">Export CSV</button>
+            <button class="btn btn-sm btn-danger" onclick="clearVariations()">Clear All</button>
+            <input type="file" id="csv-file-input" accept=".csv" class="hidden">
+          </div>
+          <div id="shot-packs" class="shot-packs"></div>
+          <div class="table-wrapper">
+            <table id="var-table">
+              <thead>
+                <tr>
+                  <th class="th-toggle" title="Enabled for generation">On</th>
+                  <th>Scene *</th>
+                  <th>Outfit *</th>
+                  <th>Pose</th>
+                  <th>Location</th>
+                  <th>Camera</th>
+                  <th>Category</th>
+                  <th>Emotion</th>
+                  <th>Lighting</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="var-tbody"></tbody>
+            </table>
+          </div>
+          <div class="form-actions">
+            <button class="btn btn-accent" onclick="saveVariations()">Save Variations</button>
+          </div>
+        </div>
+
+        <!-- Generate Tab -->
+        <div id="tab-generate" class="tab-content">
+          <div class="gen-layout">
+            <div class="gen-settings">
+              <h3>Generation Settings</h3>
+              <div class="form-grid compact">
+                <div class="form-group">
+                  <label>Model</label>
+                  <select id="gen-model">
+                    <optgroup label="fal.ai (FLUX)">
+                      <option value="flux-pro">FLUX Pro ($0.050/MP, best)</option>
+                      <option value="flux-dev">FLUX Dev ($0.025/MP, balanced)</option>
+                      <option value="flux-2-flash">FLUX 2 Flash ($0.005/MP, fast)</option>
+                      <option value="flux-schnell">FLUX Schnell ($0.003/MP, fastest)</option>
+                    </optgroup>
+                    <optgroup label="OpenAI">
+                      <option value="gpt-image-1">gpt-image-1 (standard)</option>
+                      <option value="gpt-image-1.5" selected>gpt-image-1.5 (best)</option>
+                      <option value="gpt-image-1-mini">gpt-image-1-mini (cheapest)</option>
+                    </optgroup>
+                  </select>
+                </div>
+                <div class="form-group" id="quality-group">
+                  <label>Quality</label>
+                  <select id="gen-quality">
+                    <option value="low">Low</option>
+                    <option value="medium" selected>Medium</option>
+                    <option value="high">High</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>Size</label>
+                  <select id="gen-size">
+                    <option value="1024x1024">1024x1024 (square)</option>
+                    <option value="1024x1536" selected>1024x1536 (portrait)</option>
+                    <option value="1536x1024">1536x1024 (landscape)</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>Format</label>
+                  <select id="gen-format">
+                    <option value="webp">WebP</option>
+                    <option value="jpeg">JPEG</option>
+                    <option value="png">PNG</option>
+                  </select>
+                </div>
+                <div class="form-group" id="moderation-group">
+                  <label>Moderation</label>
+                  <select id="gen-moderation">
+                    <option value="low" selected>Low (less restrictive)</option>
+                    <option value="auto">Auto (standard)</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>Images / Row</label>
+                  <input type="number" id="gen-n" value="1" min="1" max="4">
+                </div>
+              </div>
+
+              <div id="ref-toggle-section" class="ref-toggle hidden">
+                <label class="toggle-label">
+                  <input type="checkbox" id="gen-use-refs" checked>
+                  <span>Use reference images for identity lock</span>
+                </label>
+              </div>
+
+              <div id="cost-estimate" class="cost-card">
+                <div class="cost-row"><span>Rows:</span><span id="est-rows">0</span></div>
+                <div class="cost-row"><span>Total images:</span><span id="est-total">0</span></div>
+                <div class="cost-row"><span>Estimated cost:</span><span id="est-cost">$0.00</span></div>
+              </div>
+            </div>
+
+            <div class="gen-controls">
+              <button class="btn btn-accent btn-lg" id="btn-generate" onclick="startGeneration()">Generate Images</button>
+              <button class="btn btn-danger btn-lg hidden" id="btn-cancel" onclick="cancelGeneration()">Cancel</button>
+              <button class="btn btn-sm" onclick="previewPrompts()">Preview Prompts</button>
+            </div>
+
+            <div id="gen-progress" class="gen-progress hidden">
+              <div class="progress-bar">
+                <div id="progress-fill" class="progress-fill" style="width: 0%"></div>
+              </div>
+              <p id="progress-text">Starting...</p>
+            </div>
+
+            <div id="gen-log" class="gen-log hidden">
+              <h4>Log</h4>
+              <pre id="log-content"></pre>
+            </div>
+
+            <div id="prompt-preview" class="prompt-preview hidden">
+              <h4>Prompt Preview</h4>
+              <div id="preview-content"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Gallery Tab -->
+        <div id="tab-gallery" class="tab-content">
+          <div class="gallery-toolbar">
+            <select id="gallery-filter" onchange="loadGallery()">
+              <option value="">All categories</option>
+            </select>
+            <button class="btn btn-sm btn-danger hidden" id="btn-delete-selected" onclick="deleteSelectedImages()">Delete Selected</button>
+          </div>
+          <div id="gallery-grid" class="gallery-grid"></div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="settings-modal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Settings</h3>
+        <button class="btn-close" onclick="closeSettings()">&times;</button>
+      </div>
+      <div class="form-group">
+        <label>fal.ai API Key <span class="hint-inline">(for FLUX models)</span></label>
+        <input type="password" id="settings-fal-key" placeholder="fal-...">
+        <p class="hint">Get your key at <a href="https://fal.ai/dashboard/keys" target="_blank">fal.ai/dashboard/keys</a></p>
+      </div>
+      <div class="form-group">
+        <label>OpenAI API Key <span class="hint-inline">(for GPT Image models)</span></label>
+        <input type="password" id="settings-api-key" placeholder="sk-...">
+        <p class="hint">Stored locally in settings.json. Never transmitted externally except to the provider.</p>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-accent" onclick="saveApiKey()">Save</button>
+        <button class="btn" onclick="closeSettings()">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Lightbox -->
+  <div id="lightbox" class="lightbox hidden" onclick="closeLightbox(event)">
+    <img id="lightbox-img" src="" alt="">
+    <button class="lightbox-close" onclick="closeLightbox()">&times;</button>
+  </div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

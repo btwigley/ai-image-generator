@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Prompt Manager — Character Generator</title>
+<link rel="stylesheet" href="/static/css/prompt-manager.css">
+</head>
+<body>
+
+<!-- Top Bar -->
+<div class="topbar">
+  <div class="topbar-title">Prompt Manager</div>
+  <div class="topbar-progress">
+    <div class="progress-bar"><div class="progress-fill" id="globalProgress" style="width:0%"></div></div>
+    <div class="progress-text" id="globalCount">0/0</div>
+  </div>
+  <input type="text" class="search-box" id="searchBox" placeholder="Search characters...">
+  <div class="topbar-actions">
+    <button class="btn btn-accent" id="newChatBtn" title="Copy character identity + constraints for a new ChatGPT conversation">New Chat</button>
+    <button class="btn btn-outline btn-sm btn-danger" id="resetBtn" title="Reset all progress">Reset</button>
+    <a href="/" class="btn btn-outline btn-sm" style="text-decoration:none">Generator</a>
+  </div>
+</div>
+
+<!-- Layout -->
+<div class="layout">
+  <div class="sidebar" id="sidebar"></div>
+  <div class="main" id="mainContent"></div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<!-- Shortcut hints -->
+<div class="shortcuts-hint">
+  <span class="kbd">C</span> Copy &nbsp;
+  <span class="kbd">Q</span> Copy Name &nbsp;
+  <span class="kbd">D</span> Done &nbsp;
+  <span class="kbd">N</span> Next Undone &nbsp;
+  <span class="kbd">&larr;</span><span class="kbd">&rarr;</span> Prev/Next
+</div>
+
+<script src="/static/js/prompt-manager.js"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "api_key": "",
+  "fal_key": "",
+  "default_model": "gpt-image-1.5",
+  "default_quality": "medium",
+  "default_size": "1024x1536",
+  "default_format": "webp",
+  "default_compression": 90,
+  "default_moderation": "low"
+}
