@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Character Generator — Local Web App
+AI Image Generator — Local Web App
 Flask server that wraps the batch image generator with a visual UI,
 reference image support, and real-time generation progress.
 
@@ -811,7 +811,7 @@ if __name__ == "__main__":
     CHARACTERS_DIR.mkdir(parents=True, exist_ok=True)
     REFS_DIR.mkdir(parents=True, exist_ok=True)
     DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"\n  Character Generator")
+    print(f"\n  AI Image Generator")
     print(f"  http://localhost:5000\n")
     _tb.Timer(1.0, webbrowser.open, args=["http://localhost:5000"]).start()
     app.run(host="127.0.0.1", port=5000, debug=False)

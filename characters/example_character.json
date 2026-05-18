@@ -1,15 +1,14 @@
 {
-  "name": "luna",
+  "name": "verdanthor",
   "identity": {
-    "age": 18,
-    "hair": "long loose wavy auburn-red hair with natural flyaways and a few strands across her face",
-    "eyes": "large green eyes with visible lower lash line and slight under-eye shadow",
-    "skin": "fair skin with natural texture, visible pores on nose, light freckles scattered across cheeks and shoulders, no foundation",
-    "body": "petite athletic frame, very slim toned waist, lean flat stomach, toned legs, naturally curvy, fit and slender overall",
-    "face": "heart-shaped face, full pouty lips, slight dimple on left cheek, natural brows slightly imperfect"
+    "species": "ancient forest dragon",
+    "scales": "iridescent emerald and jade scales with faint golden filigree along the jaw and spine ridges",
+    "eyes": "large amber eyes with vertical slit pupils, faintly glowing from within",
+    "horns": "swept-back crystalline horns that refract light into rainbow flecks",
+    "wings": "translucent membranous wings with visible emerald veining, folded or spread depending on scene"
   },
-  "core": "Same woman in every photo. An 18-year-old woman with long loose wavy auburn-red hair with natural flyaways. Large green eyes, fair skin with light freckles across cheeks and shoulders. Petite athletic frame, very slim toned waist, lean flat stomach, toned legs, naturally curvy, fit and slender overall. Heart-shaped face, full pouty lips, slight dimple on left cheek, natural brows. Real human being, not a render.",
-  "style": "Natural photograph, real skin texture, authentic lighting, believable social media photo.",
-  "negative": "CGI render, anime, cartoon, extra fingers, distorted anatomy, watermarks, text overlays, plastic skin, doll-like, uncanny valley, chubby, thick waist, heavy build, wide midsection, bloated, stocky, square body, masculine build, bulky",
-  "tags": ["instagram", "model", "lifestyle", "candid"]
+  "core": "Same dragon in every image. An ancient sage forest dragon with iridescent emerald scales, golden filigree ridges, large glowing amber slit-pupil eyes, crystalline swept-back horns, and translucent veined wings. Massive yet graceful, exuding calm intelligence.",
+  "style": "Painterly digital art, warm cinematic lighting, atmospheric depth, rich natural environments.",
+  "negative": "cartoon, chibi, anime, photo-realistic human skin, text overlays, watermarks, low resolution, flat lighting, plastic toys",
+  "tags": ["fantasy", "creature", "dragon", "digital-art"]
 }

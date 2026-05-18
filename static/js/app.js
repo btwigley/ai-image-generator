@@ -1,5 +1,5 @@
 // ============================================
-// Character Generator — Frontend
+// AI Image Generator — Frontend
 // ============================================
 
 let state = {
