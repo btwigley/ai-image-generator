@@ -415,11 +415,19 @@ class Manifest:
         return len(stale)
 
     def next_index(self) -> int:
-        return max(
-            (int(k.split("_")[-1]) for k in self.data
-             if k != "_meta" and "_" in k and k.split("_")[-1].isdigit()),
-            default=0,
-        ) + 1
+        """One past the highest index in any saved image's file name.
+
+        Only entries with a filename count, so other keys (pending_*,
+        unsaved_*_<time>) can never push the numbering forward.
+        """
+        best = 0
+        for key, entry in self.data.items():
+            if key == "_meta" or not isinstance(entry, dict) or not entry.get("filename"):
+                continue
+            tail = Path(entry["filename"]).stem.rsplit("_", 1)[-1]
+            if tail.isdigit():
+                best = max(best, int(tail))
+        return best + 1
 
     def add(self, key: str, entry: dict):
         self.data[key] = entry
@@ -521,6 +529,13 @@ def image_folder(output_dir: Path, char_name: str, category: str) -> Path:
 def file_index_of(path: Path) -> int:
     """The numeric index at the end of a saved image's file name."""
     return int(path.stem.rsplit("_", 1)[-1])
+
+
+def manifest_key(output_dir: Path, path: Path) -> str:
+    """The manifest key for a saved image: its path under the output folder,
+    without the extension ("name/category/name_0001"). The file was created
+    exclusively, so no other writer, in any category, can hold the same key."""
+    return Path(path).relative_to(output_dir).with_suffix("").as_posix()
 
 
 def _write_new(folder: Path, char_name: str, file_idx: int, fmt: str, data: bytes) -> Path:
@@ -691,7 +706,7 @@ async def run_parallel(args, char: dict, variations: list[dict]):
                 return
             fid = file_index_of(filepath)
             file_counter = fid + 1
-            key = f"{char['name']}_{fid:04d}"
+            key = manifest_key(output_dir, filepath)
             manifest.add(key, {
                 "custom_id": make_custom_id(char["name"], row, idx, img_i),
                 "filename": str(filepath.relative_to(output_dir)),
@@ -845,7 +860,7 @@ def save_batch_results(jsonl_text: str, manifest: "Manifest", output_dir: Path,
             filepath = save_image(b64, output_dir, char_name, category, file_counter, args.format)
             fid = file_index_of(filepath)
             file_counter = fid + 1
-            manifest.add(f"{char_name}_{fid:04d}", {
+            manifest.add(manifest_key(output_dir, filepath), {
                 "custom_id": custom_id,
                 "filename": str(filepath.relative_to(output_dir)),
                 "prompt_hash": pending_entry.get("prompt_hash", ""),

@@ -30,7 +30,7 @@ from batch_image_generator import (
     FAL_MODELS, MAX_RETRIES, BACKOFF_BASE, TOKEN_COUNTS,
     Manifest, build_prompt, estimate_cost, generate_fal, is_fal_model,
     make_custom_id, prompt_hash, save_image, save_image_from_url,
-    file_index_of, safe_path_part,
+    file_index_of, manifest_key, safe_path_part,
 )
 
 app = Flask(__name__)
@@ -649,7 +649,7 @@ def _generation_worker_inner(job_id: str, char: dict, variations: list[dict],
                             params["output_compression"] = compression
                         result = client.images.generate(**params)
 
-                    results = [("b64", img.b64_json) for img in result.data if img.b64_json]
+                    results = [("b64", img.b64_json) for img in result.data]
                     if edit_moderation_fail:
                         gen_mode = "generate (fallback)"
                 break
@@ -684,6 +684,10 @@ def _generation_worker_inner(job_id: str, char: dict, variations: list[dict],
         saved, unsaved = [], []
         for img_i, (kind, payload) in enumerate(results):
             path, last_err = None, None
+            if not payload:
+                unsaved.append((img_i, kind, payload,
+                                ValueError("the provider returned an item with no image")))
+                continue
             for save_try in range(MAX_RETRIES):
                 try:
                     if kind == "url":
@@ -720,7 +724,7 @@ def _generation_worker_inner(job_id: str, char: dict, variations: list[dict],
             }
             if partial:
                 entry["partial"] = True
-            manifest.add(f"{char_name}_{fid:04d}", entry)
+            manifest.add(manifest_key(output_dir, output_dir / rel), entry)
         unsaved_urls = [p for _, kind, p, _ in unsaved if kind == "url"]
         if unsaved_urls:
             manifest.add(f"unsaved_{char_name}_{idx:04d}_{int(time.time())}", {

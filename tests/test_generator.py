@@ -203,6 +203,47 @@ def test_two_manifest_writers_merge_instead_of_overwriting(tmp_path):
     assert not list(tmp_path.glob("manifest.json.*"))   # no lock or temp file left behind
 
 
+def test_two_writers_in_different_categories_keep_both_records(tmp_path):
+    # Both writers start from the same snapshot, so both allocate index 1;
+    # the images land in different category folders as audit_0001 each.
+    first, second = big.Manifest(tmp_path), big.Manifest(tmp_path)
+    assert first.next_index() == second.next_index() == 1
+    for m, category, ph in ((first, "morning", "h-morning"), (second, "night", "h-night")):
+        path = big.save_image(PNG_B64, tmp_path, "audit", category, m.next_index(), "png")
+        m.add(big.manifest_key(tmp_path, path), {"filename": path.relative_to(tmp_path).as_posix(),
+                                                 "prompt_hash": ph})
+    fresh = big.Manifest(tmp_path)
+    assert fresh.has_hash("h-morning") and fresh.has_hash("h-night")
+    assert sorted(k for k in fresh.data if k != "_meta") == ["audit/morning/audit_0001", "audit/night/audit_0001"]
+
+
+def test_next_index_ignores_keys_that_are_not_saved_images(tmp_path):
+    m = big.Manifest(tmp_path)
+    m.add("audit/morning/audit_0007", {"filename": "audit/morning/audit_0007.png", "prompt_hash": "h"})
+    m.add("unsaved_audit_0003_1794687003", {"status": "unsaved", "prompt_hash": "h2", "urls": ["x"]})
+    m.add("pending_audit_morning_0099", {"status": "pending", "prompt_hash": "h3", "batch_id": "b"})
+    assert big.Manifest(tmp_path).next_index() == 8
+
+
+def test_an_openai_item_without_bytes_makes_the_row_partial(out, monkeypatch):
+    class Images:
+        def generate(self, **params):
+            return types.SimpleNamespace(data=[types.SimpleNamespace(b64_json=PNG_B64),
+                                               types.SimpleNamespace(b64_json=None)])
+
+    class OpenAI:
+        def __init__(self, api_key=None):
+            self.images = Images()
+
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=OpenAI))
+    _new_job("ffff0001")
+    row = _row("a")
+    webapp._generation_worker("ffff0001", dict(CHAR), [row], {"model": "gpt-image-1", "format": "png", "n": 2}, [])
+    job = webapp._jobs["ffff0001"]
+    assert (job["completed"], job["failed"]) == (0, 1)
+    assert not big.Manifest(out).has_hash(big.prompt_hash(big.build_prompt(dict(CHAR), row)))
+
+
 # ── Review R1-05: every image of one paid call is saved, or the row says so ──
 
 def test_second_image_download_is_retried_without_paying_again(out, monkeypatch):
