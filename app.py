@@ -534,6 +534,9 @@ def _generation_worker_inner(job_id: str, char: dict, variations: list[dict],
     char_name = char.get("name", "character")
     if not _validate_name(char_name):
         char_name = re.sub(r"[^a-zA-Z0-9_-]", "_", char_name)[:64] or "character"
+    # The output folder must be valid before anything is paid for; this raises
+    # into the worker's error handler, so the job fails with no provider call.
+    safe_path_part(char_name, "character")
 
     valid_rows = [(i, row) for i, row in enumerate(variations)
                   if isinstance(row, dict) and row.get("scene") and row.get("outfit")]
@@ -583,34 +586,22 @@ def _generation_worker_inner(job_id: str, char: dict, variations: list[dict],
                     _jobs[job_id]["status"] = "cancelled"
                 return
 
+        category = row.get("category", "general")
+        gen_mode = "fal" if using_fal else ("edit" if use_refs else "generate")
+        edit_moderation_fail = False
+        results = None          # [("url", url) | ("b64", data), ...] once a paid call succeeds
+        out_fmt = fmt
+
+        # Phase 1: the paid call. Retried only while nothing has been paid for.
         for attempt in range(MAX_RETRIES):
             edit_moderation_fail = False
-            gen_mode = "fal" if using_fal else ("edit" if use_refs else "generate")
-            generated_paths = []
             try:
-                category = row.get("category", "general")
-
                 if using_fal:
-                    urls, actual_fmt = generate_fal(
+                    urls, out_fmt = generate_fal(
                         prompt=prompt, model=model, size=size,
                         fmt=fmt, num_images=n_per_row, safety=False,
                     )
-                    for img_i, url in enumerate(urls):
-                        filepath = save_image_from_url(url, output_dir, char_name, category, file_counter, actual_fmt)
-                        fid = file_index_of(filepath)
-                        file_counter = fid + 1
-                        generated_paths.append(str(filepath.relative_to(output_dir)))
-                        key = f"{char_name}_{fid:04d}"
-                        manifest.add(key, {
-                            "custom_id": make_custom_id(char_name, row, idx, img_i),
-                            "filename": str(filepath.relative_to(output_dir)),
-                            "prompt_hash": ph,
-                            "model": model,
-                            "quality": quality,
-                            "size": size,
-                            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                            "batch_id": None,
-                        })
+                    results = [("url", u) for u in urls]
                 else:
                     if use_refs:
                         ref_prompt = prompt + (
@@ -658,49 +649,12 @@ def _generation_worker_inner(job_id: str, char: dict, variations: list[dict],
                             params["output_compression"] = compression
                         result = client.images.generate(**params)
 
-                    images_b64 = [img.b64_json for img in result.data if img.b64_json]
+                    results = [("b64", img.b64_json) for img in result.data if img.b64_json]
                     if edit_moderation_fail:
                         gen_mode = "generate (fallback)"
-                    for img_i, b64 in enumerate(images_b64):
-                        filepath = save_image(b64, output_dir, char_name, category, file_counter, fmt)
-                        fid = file_index_of(filepath)
-                        file_counter = fid + 1
-                        generated_paths.append(str(filepath.relative_to(output_dir)))
-                        key = f"{char_name}_{fid:04d}"
-                        manifest.add(key, {
-                            "custom_id": make_custom_id(char_name, row, idx, img_i),
-                            "filename": str(filepath.relative_to(output_dir)),
-                            "prompt_hash": ph,
-                            "model": model,
-                            "quality": quality,
-                            "size": size,
-                            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                            "batch_id": None,
-                        })
-
-                completed += 1
-                with _jobs_lock:
-                    if job_id in _jobs:
-                        _jobs[job_id]["completed"] = completed
-                        _jobs[job_id]["failed"] = failed
-                        _jobs[job_id]["last_images"] = generated_paths
-                        if edit_moderation_fail:
-                            _jobs[job_id]["log"].append(f"Row {idx+1}: Refs blocked, used generate mode instead")
-                print(f"[GEN] {completed}/{total} done - Row {idx+1} ({category}) [{gen_mode}]")
                 break
 
             except Exception as e:
-                if generated_paths:
-                    # The provider call succeeded and images were saved; a later
-                    # local error must not count a refusal or pay for a retry.
-                    completed += 1
-                    with _jobs_lock:
-                        if job_id in _jobs:
-                            _jobs[job_id]["completed"] = completed
-                            _jobs[job_id]["last_images"] = generated_paths
-                            _jobs[job_id]["log"].append(f"Row {idx+1}: saved, then {type(e).__name__}")
-                    print(f"[GEN] Row {idx+1}: images saved, then a local error - {str(e)[:150]}")
-                    break
                 if _is_provider_refusal(e):
                     failed += 1
                     with _jobs_lock:
@@ -720,6 +674,89 @@ def _generation_worker_inner(job_id: str, char: dict, variations: list[dict],
                             _jobs[job_id]["failed"] = failed
                             _jobs[job_id]["log"].append(f"Row {idx+1}: {str(e)[:100]}")
                     print(f"[GEN] Row {idx+1}: FAILED after {MAX_RETRIES} retries - {str(e)[:80]}")
+
+        if results is None:
+            time.sleep(0.3)
+            continue
+
+        # Phase 2: save every image the paid call returned. A failed download or
+        # write is retried on its own; nothing here makes another paid call.
+        saved, unsaved = [], []
+        for img_i, (kind, payload) in enumerate(results):
+            path, last_err = None, None
+            for save_try in range(MAX_RETRIES):
+                try:
+                    if kind == "url":
+                        path = save_image_from_url(payload, output_dir, char_name, category, file_counter, out_fmt)
+                    else:
+                        path = save_image(payload, output_dir, char_name, category, file_counter, fmt)
+                    break
+                except Exception as e:
+                    last_err = e
+                    if save_try < MAX_RETRIES - 1:
+                        time.sleep(BACKOFF_BASE ** (save_try + 1))
+            if path is None:
+                unsaved.append((img_i, kind, payload, last_err))
+                continue
+            fid = file_index_of(path)
+            file_counter = fid + 1
+            saved.append((fid, str(path.relative_to(output_dir)), img_i))
+
+        # A row counts as generated only when every requested result is saved.
+        # Otherwise its saved images are recorded as "partial" (they do not
+        # block a rerun) and any unsaved download URL is kept in the manifest.
+        partial = bool(unsaved) or not results
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        for fid, rel, img_i in saved:
+            entry = {
+                "custom_id": make_custom_id(char_name, row, idx, img_i),
+                "filename": rel,
+                "prompt_hash": ph,
+                "model": model,
+                "quality": quality,
+                "size": size,
+                "timestamp": stamp,
+                "batch_id": None,
+            }
+            if partial:
+                entry["partial"] = True
+            manifest.add(f"{char_name}_{fid:04d}", entry)
+        unsaved_urls = [p for _, kind, p, _ in unsaved if kind == "url"]
+        if unsaved_urls:
+            manifest.add(f"unsaved_{char_name}_{idx:04d}_{int(time.time())}", {
+                "custom_id": make_custom_id(char_name, row, idx),
+                "prompt_hash": ph,
+                "status": "unsaved",
+                "urls": unsaved_urls,
+                "model": model,
+                "timestamp": stamp,
+            })
+        generated_paths = [rel for _, rel, _ in saved]
+
+        if partial:
+            failed += 1
+            if not results:
+                reason = "the provider returned no images"
+            else:
+                err = unsaved[0][3]
+                reason = (f"{len(saved)} of {len(results)} image(s) saved; "
+                          f"{len(unsaved)} could not be saved ({type(err).__name__}: {str(err)[:80]})")
+            with _jobs_lock:
+                if job_id in _jobs:
+                    _jobs[job_id]["failed"] = failed
+                    _jobs[job_id]["last_images"] = generated_paths
+                    _jobs[job_id]["log"].append(f"Row {idx+1}: {reason}; the row can be generated again")
+            print(f"[GEN] Row {idx+1}: PARTIAL - {reason}")
+        else:
+            completed += 1
+            with _jobs_lock:
+                if job_id in _jobs:
+                    _jobs[job_id]["completed"] = completed
+                    _jobs[job_id]["failed"] = failed
+                    _jobs[job_id]["last_images"] = generated_paths
+                    if edit_moderation_fail:
+                        _jobs[job_id]["log"].append(f"Row {idx+1}: Refs blocked, used generate mode instead")
+            print(f"[GEN] {completed}/{total} done - Row {idx+1} ({category}) [{gen_mode}]")
 
         time.sleep(0.3)
 

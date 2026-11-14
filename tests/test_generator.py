@@ -165,6 +165,91 @@ def test_ordinary_categories_still_save(tmp_path):
     assert p.parent.name == "night market"
 
 
+@pytest.mark.parametrize("name", ["_draft", "-draft", "___"])
+def test_names_the_web_ui_accepts_save_with_one_paid_call(out, monkeypatch, name):
+    calls = _fake_openai(monkeypatch)
+    _new_job("dddd0001")
+    webapp._generation_worker("dddd0001", dict(CHAR, name=name), [_row("a")],
+                              {"model": "gpt-image-1", "format": "png"}, [])
+    job = webapp._jobs["dddd0001"]
+    assert len(calls) == 1
+    assert (job["completed"], job["failed"]) == (1, 0)
+    assert len(list((out / name / "morning").iterdir())) == 1
+
+
+@pytest.mark.parametrize("name", ["CON", "nul"])
+def test_an_unusable_folder_name_fails_before_any_paid_call(out, monkeypatch, name):
+    calls = _fake_openai(monkeypatch)
+    _new_job("dddd0002")
+    webapp._generation_worker("dddd0002", dict(CHAR, name=name), [_row("a")],
+                              {"model": "gpt-image-1", "format": "png"}, [])
+    assert calls == []
+    assert webapp._jobs["dddd0002"]["status"] == "error"
+
+
+# ── Review R1-03: separate writers keep each other's manifest entries ──
+
+def test_two_manifest_writers_merge_instead_of_overwriting(tmp_path):
+    first, second = big.Manifest(tmp_path), big.Manifest(tmp_path)   # both loaded before either saves
+    first.add("a_0001", {"filename": "a/x/a_0001.png", "prompt_hash": "h1"})
+    second.add("a_0002", {"filename": "a/x/a_0002.png", "prompt_hash": "h2"})
+    second.add_batch_ids(["b2"])
+    first.add_batch_ids(["b1"])
+    fresh = big.Manifest(tmp_path)
+    assert fresh.has_hash("h1") and fresh.has_hash("h2")
+    assert sorted(fresh.get_pending_batches()) == ["b1", "b2"]
+    first.remove_batch_id("b1")
+    assert big.Manifest(tmp_path).get_pending_batches() == ["b2"]
+    assert not list(tmp_path.glob("manifest.json.*"))   # no lock or temp file left behind
+
+
+# ── Review R1-05: every image of one paid call is saved, or the row says so ──
+
+def test_second_image_download_is_retried_without_paying_again(out, monkeypatch):
+    calls, fails = [], {"left": 1}
+    monkeypatch.setattr(webapp, "generate_fal",
+                        lambda **kw: calls.append(kw) or (["https://x.invalid/1.png", "https://x.invalid/2.png"], "png"))
+
+    def flaky_save(url, *args):
+        if url.endswith("2.png") and fails["left"]:
+            fails["left"] -= 1
+            raise TimeoutError("synthetic transient download failure")
+        return _fake_fal_save(url, *args)
+
+    monkeypatch.setattr(webapp, "save_image_from_url", flaky_save)
+    _new_job("eeee0001")
+    webapp._generation_worker("eeee0001", dict(CHAR), [_row("a")], {"model": "flux-dev", "n": 2}, [])
+    job = webapp._jobs["eeee0001"]
+    assert len(calls) == 1
+    assert (job["completed"], job["failed"]) == (1, 0)
+    assert len(list((out / "audit" / "morning").iterdir())) == 2
+
+
+def test_an_unsaved_image_reports_the_row_partial_and_retryable(out, monkeypatch):
+    calls = []
+    monkeypatch.setattr(webapp, "generate_fal",
+                        lambda **kw: calls.append(kw) or (["https://x.invalid/1.png", "https://x.invalid/2.png"], "png"))
+
+    def broken_second(url, *args):
+        if url.endswith("2.png"):
+            raise TimeoutError("synthetic permanent download failure")
+        return _fake_fal_save(url, *args)
+
+    monkeypatch.setattr(webapp, "save_image_from_url", broken_second)
+    _new_job("eeee0002")
+    row = _row("a")
+    webapp._generation_worker("eeee0002", dict(CHAR), [row], {"model": "flux-dev", "n": 2}, [])
+    job = webapp._jobs["eeee0002"]
+    assert len(calls) == 1
+    assert (job["completed"], job["failed"]) == (0, 1)
+    assert any("1 of 2 image(s) saved" in line for line in job["log"])
+    manifest = big.Manifest(out)
+    ph = big.prompt_hash(big.build_prompt(dict(CHAR), row))
+    assert not manifest.has_hash(ph)                       # the row can be generated again
+    unsaved = [e for k, e in manifest.data.items() if k.startswith("unsaved_")]
+    assert unsaved and unsaved[0]["urls"] == ["https://x.invalid/2.png"]
+
+
 # ── OPEN_SOURCE-15: a fal.ai success is one success ──────────────
 
 def _fake_fal_save(url, output_dir, char_name, category, file_idx, fmt):

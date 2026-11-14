@@ -13,6 +13,7 @@ Usage:
 import argparse
 import asyncio
 import base64
+import contextlib
 import csv
 import hashlib
 import io
@@ -23,6 +24,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+import uuid
 from configparser import ConfigParser
 from datetime import datetime, timezone
 from pathlib import Path
@@ -145,6 +147,8 @@ def load_character(path: str) -> dict:
     if not data.get("core"):
         raise ValueError("Character template must have a 'core' description or an 'identity' block.")
     data.setdefault("name", p.stem)
+    # The name is the output folder: refuse a bad one before anything is paid for.
+    safe_path_part(str(data["name"]), "character")
     data.setdefault("style", "")
     data.setdefault("negative", "")
     return data
@@ -319,19 +323,71 @@ def display_cost(args, total_images: int):
 # ---------------------------------------------------------------------------
 
 class Manifest:
+    """manifest.json for one output folder, safe to share between processes.
+
+    Each instance remembers only what it changed. Every save takes a lock file
+    beside the manifest, re-reads the file, applies those changes on top and
+    swaps the result in, so the web app and a CLI run (or two CLI runs) writing
+    the same folder keep each other's entries.
+    """
+
+    LOCK_TIMEOUT_SECONDS = 30.0
+    STALE_LOCK_SECONDS = 120.0
+
     def __init__(self, output_dir: Path):
-        self.path = output_dir / "manifest.json"
-        self.data: dict = {}
-        if self.path.exists():
-            with open(self.path, "r", encoding="utf-8") as f:
-                self.data = json.load(f)
+        self.path = Path(output_dir) / "manifest.json"
+        self.data: dict = self._read()
+        self._changed: set[str] = set()
+        self._removed: set[str] = set()
+        self._batches_added: set[str] = set()
+        self._batches_removed: set[str] = set()
+
+    def _read(self) -> dict:
+        if not self.path.exists():
+            return {}
+        with open(self.path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    @contextlib.contextmanager
+    def _lock(self):
+        lock = self.path.with_name(self.path.name + ".lock")
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + self.LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+                break
+            except FileExistsError:
+                try:
+                    if time.time() - lock.stat().st_mtime > self.STALE_LOCK_SECONDS:
+                        lock.unlink()  # a writer that died holding it
+                        continue
+                except FileNotFoundError:
+                    continue
+                if time.monotonic() > deadline:
+                    raise TimeoutError(f"Manifest is locked by another writer: {lock}")
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            try:
+                lock.unlink()
+            except FileNotFoundError:
+                pass
+
+    def remove(self, key: str):
+        if self.data.pop(key, None) is not None:
+            self._removed.add(key)
+            self._changed.discard(key)
+            self._save()
 
     def has_hash(self, ph: str) -> bool:
         """True when this prompt has a saved image or a batch still being tracked.
 
         A pending entry whose batch is no longer tracked (failed, expired,
-        cancelled, or finished without this row) does not count, so the row can
-        be generated again.
+        cancelled, or finished without this row) does not count, and neither
+        does an image saved from a row that did not save all of its results
+        ("partial"), so the row can be generated again.
         """
         active = set(self.get_pending_batches())
         for key, entry in self.data.items():
@@ -339,7 +395,7 @@ class Manifest:
                 continue
             if entry.get("prompt_hash") != ph:
                 continue
-            if entry.get("filename"):
+            if entry.get("filename") and not entry.get("partial"):
                 return True
             if entry.get("status") == "pending" and entry.get("batch_id") in active:
                 return True
@@ -352,6 +408,8 @@ class Manifest:
                  and e.get("status") == "pending" and e.get("batch_id") == batch_id]
         for k in stale:
             del self.data[k]
+            self._removed.add(k)
+            self._changed.discard(k)
         if stale:
             self._save()
         return len(stale)
@@ -365,13 +423,19 @@ class Manifest:
 
     def add(self, key: str, entry: dict):
         self.data[key] = entry
+        self._changed.add(key)
+        self._removed.discard(key)
         self._save()
 
     def add_batch_ids(self, batch_ids: list[str]):
         meta = self.data.setdefault("_meta", {})
-        existing = set(meta.get("pending_batches", []))
-        existing.update(batch_ids)
-        meta["pending_batches"] = list(existing)
+        existing = list(meta.get("pending_batches", []))
+        for bid in batch_ids:
+            if bid not in existing:
+                existing.append(bid)
+        meta["pending_batches"] = existing
+        self._batches_added.update(batch_ids)
+        self._batches_removed.difference_update(batch_ids)
         self._save()
 
     def get_pending_batches(self) -> list[str]:
@@ -382,34 +446,67 @@ class Manifest:
         pending = meta.get("pending_batches", [])
         if batch_id in pending:
             pending.remove(batch_id)
-            self._save()
+        self._batches_removed.add(batch_id)
+        self._batches_added.discard(batch_id)
+        self._save()
 
     def _save(self):
-        # Write a temp file and swap it in, so a crash mid-write cannot leave a
-        # truncated manifest behind.
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(self.data, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, self.path)
+        """Merge this instance's changes into the file on disk, under the lock.
+
+        The merged result is written to a temp file unique to this writer and
+        swapped in, so a crash mid-write cannot leave a truncated manifest.
+        """
+        with self._lock():
+            disk = self._read()
+            for key in self._removed:
+                disk.pop(key, None)
+            for key in self._changed:
+                if key in self.data:
+                    disk[key] = self.data[key]
+            if self._batches_added or self._batches_removed or "_meta" in disk:
+                pending = list(disk.get("_meta", {}).get("pending_batches", []))
+                for bid in self._batches_added:
+                    if bid not in pending:
+                        pending.append(bid)
+                pending = [b for b in pending if b not in self._batches_removed]
+                disk.setdefault("_meta", {})["pending_batches"] = pending
+            tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(disk, f, indent=2, ensure_ascii=False)
+            os.replace(tmp, self.path)
+            self.data = disk
+            self._changed.clear()
+            self._removed.clear()
+            self._batches_added.clear()
+            self._batches_removed.clear()
 
 
 # ---------------------------------------------------------------------------
 # Image saving
 # ---------------------------------------------------------------------------
 
-_PATH_PART_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$")
+_PATH_PART_RE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9 _.-]{0,63}$")
+_WINDOWS_DEVICE_NAMES = {"CON", "PRN", "AUX", "NUL",
+                         *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+
+
+class UnsafePathError(ValueError):
+    """A folder name that could leave its parent folder or cannot be created."""
 
 
 def safe_path_part(value: str, fallback: str = "general") -> str:
     """A single folder name: letters, digits, space, dot, dash, underscore.
 
-    Raises ValueError for anything that could leave its parent folder
-    ("..", a separator, an absolute path, a drive). Empty means the fallback.
+    It may start with a letter, digit, underscore or dash (every name the web
+    UI accepts). Raises UnsafePathError for anything that could leave its
+    parent folder ("..", a separator, an absolute path, a drive) or that
+    Windows cannot create (a trailing dot or space, a device name such as
+    CON). Empty means the fallback.
     """
     part = (value or "").strip() or fallback
-    if not _PATH_PART_RE.match(part) or ".." in part:
-        raise ValueError(f"Invalid folder name: {part!r}")
+    if (not _PATH_PART_RE.match(part) or ".." in part or part[-1] in ". "
+            or part.split(".")[0].upper() in _WINDOWS_DEVICE_NAMES):
+        raise UnsafePathError(f"Invalid folder name: {part!r}")
     return part
 
 
@@ -586,7 +683,12 @@ async def run_parallel(args, char: dict, variations: list[dict]):
 
         category = row.get("category", "general")
         for img_i, b64 in enumerate(images):
-            filepath = save_image(b64, output_dir, char["name"], category, file_counter, args.format)
+            try:
+                filepath = save_image(b64, output_dir, char["name"], category, file_counter, args.format)
+            except Exception as e:
+                print(f"  Row {idx + 1}: image {img_i + 1} could not be saved: {e}")
+                failed += 1
+                return
             fid = file_index_of(filepath)
             file_counter = fid + 1
             key = f"{char['name']}_{fid:04d}"
@@ -743,7 +845,7 @@ def save_batch_results(jsonl_text: str, manifest: "Manifest", output_dir: Path,
             filepath = save_image(b64, output_dir, char_name, category, file_counter, args.format)
             fid = file_index_of(filepath)
             file_counter = fid + 1
-            manifest.data[f"{char_name}_{fid:04d}"] = {
+            manifest.add(f"{char_name}_{fid:04d}", {
                 "custom_id": custom_id,
                 "filename": str(filepath.relative_to(output_dir)),
                 "prompt_hash": pending_entry.get("prompt_hash", ""),
@@ -752,12 +854,11 @@ def save_batch_results(jsonl_text: str, manifest: "Manifest", output_dir: Path,
                 "size": pending_entry.get("size", args.size),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "batch_id": batch_id,
-            }
+            })
             saved_any = True
             downloaded += 1
         if saved_any:
-            manifest.data.pop(pending_key, None)
-        manifest._save()
+            manifest.remove(pending_key)
     return downloaded
 
 

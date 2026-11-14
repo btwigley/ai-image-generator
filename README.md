@@ -44,7 +44,14 @@ python app.py
 # Opens at http://localhost:5000
 ```
 
-The web UI generates one job at a time: a second job started while one runs waits for it.
+The web UI generates one job at a time: a second job started while one runs waits for it. The web UI and
+CLI runs may share an output folder: every manifest update takes `manifest.json.lock`, re-reads the manifest and merges
+its own entries, so no writer drops another's.
+
+Each row makes one paid call. Every image it returns is then saved, and a failed download or write is retried without
+paying again. If an image still cannot be saved, the row is reported as failed, the images it did save are kept
+(marked `partial` in the manifest), any unsaved download URL is recorded under an `unsaved_*` entry, and the row can be
+generated again.
 
 ### CLI
 

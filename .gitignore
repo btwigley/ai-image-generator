@@ -8,4 +8,5 @@ output/**/*.png
 output/**/*.webp
 output/**/*.jpg
 output/**/*.jpeg
-output/manifest.json.tmp
+output/manifest.json.*tmp
+output/manifest.json.lock
