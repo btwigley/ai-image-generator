@@ -1,0 +1,14 @@
+{
+  "name": "verdanthor",
+  "identity": {
+    "species": "ancient forest dragon",
+    "scales": "iridescent emerald and jade scales with faint golden filigree along the jaw and spine ridges",
+    "eyes": "large amber eyes with vertical slit pupils, faintly glowing from within",
+    "horns": "swept-back crystalline horns that refract light into rainbow flecks",
+    "wings": "translucent membranous wings with visible emerald veining, folded or spread depending on scene"
+  },
+  "core": "Same dragon in every image. An ancient sage forest dragon with iridescent emerald scales, golden filigree ridges, large glowing amber slit-pupil eyes, crystalline swept-back horns, and translucent veined wings. Massive yet graceful, exuding calm intelligence.",
+  "style": "Painterly digital art, warm cinematic lighting, atmospheric depth, rich natural environments.",
+  "negative": "cartoon, chibi, anime, photo-realistic human skin, text overlays, watermarks, low resolution, flat lighting, plastic toys",
+  "tags": ["fantasy", "creature", "dragon", "digital-art"]
+}

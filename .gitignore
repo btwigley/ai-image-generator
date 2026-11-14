@@ -1,0 +1,9 @@
+settings.json
+.env
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+output/*.png
+output/*.webp
+output/*.jpg
