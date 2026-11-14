@@ -532,10 +532,11 @@ def file_index_of(path: Path) -> int:
 
 
 def manifest_key(output_dir: Path, path: Path) -> str:
-    """The manifest key for a saved image: its path under the output folder,
-    without the extension ("name/category/name_0001"). The file was created
-    exclusively, so no other writer, in any category, can hold the same key."""
-    return Path(path).relative_to(output_dir).with_suffix("").as_posix()
+    """The manifest key for a saved image: its full path under the output
+    folder, extension included ("name/category/name_0001.png"). The file was
+    created exclusively under exactly that name, so no other writer, in any
+    category or format, can hold the same key."""
+    return Path(path).relative_to(output_dir).as_posix()
 
 
 def _write_new(folder: Path, char_name: str, file_idx: int, fmt: str, data: bytes) -> Path:

@@ -214,7 +214,19 @@ def test_two_writers_in_different_categories_keep_both_records(tmp_path):
                                                  "prompt_hash": ph})
     fresh = big.Manifest(tmp_path)
     assert fresh.has_hash("h-morning") and fresh.has_hash("h-night")
-    assert sorted(k for k in fresh.data if k != "_meta") == ["audit/morning/audit_0001", "audit/night/audit_0001"]
+    assert sorted(k for k in fresh.data if k != "_meta") == ["audit/morning/audit_0001.png",
+                                                             "audit/night/audit_0001.png"]
+
+
+def test_two_writers_in_one_category_with_different_formats_keep_both_records(tmp_path):
+    first, second = big.Manifest(tmp_path), big.Manifest(tmp_path)
+    for m, fmt, ph in ((first, "png", "h-png"), (second, "webp", "h-webp")):
+        path = big.save_image(PNG_B64, tmp_path, "audit", "morning", m.next_index(), fmt)
+        m.add(big.manifest_key(tmp_path, path), {"filename": path.relative_to(tmp_path).as_posix(),
+                                                 "prompt_hash": ph})
+    fresh = big.Manifest(tmp_path)
+    assert fresh.has_hash("h-png") and fresh.has_hash("h-webp")
+    assert len([k for k in fresh.data if k != "_meta"]) == 2
 
 
 def test_next_index_ignores_keys_that_are_not_saved_images(tmp_path):

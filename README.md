@@ -51,8 +51,8 @@ its own entries, so no writer drops another's.
 Each row makes one paid call. Every image it returns is then saved, and a failed download or write is retried without
 paying again. If an image still cannot be saved, the row is reported as failed, the images it did save are kept
 (marked `partial` in the manifest), any unsaved download URL is recorded under an `unsaved_*` entry, and the row can be
-generated again. Each saved image's manifest key is its path under the output folder (`name/category/name_0001`),
-so images in different categories never share a key.
+generated again. Each saved image's manifest key is its path under the output folder (`name/category/name_0001.png`, extension included),
+so images in different categories or formats never share a key.
 
 ### CLI
 
