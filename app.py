@@ -30,6 +30,7 @@ from batch_image_generator import (
     FAL_MODELS, MAX_RETRIES, BACKOFF_BASE, TOKEN_COUNTS,
     Manifest, build_prompt, estimate_cost, generate_fal, is_fal_model,
     make_custom_id, prompt_hash, save_image, save_image_from_url,
+    file_index_of, safe_path_part,
 )
 
 app = Flask(__name__)
@@ -45,19 +46,43 @@ _SAFE_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
+# Held for a whole generation job, from loading the manifest to its last save:
+# two jobs writing one output folder would otherwise pick the same file index
+# and the later manifest write would drop the other job's entries.
+_output_lock = threading.Lock()
 
 
 def _validate_name(name: str) -> bool:
     return bool(_SAFE_NAME_RE.match(name))
 
 
+# Exceptions raised by our own code, never by a provider. One of these whose
+# message happens to contain "moderation" (a variable name, say) is a bug, not
+# a safety refusal.
+_LOCAL_ERRORS = (NameError, AttributeError, TypeError, KeyError, IndexError, AssertionError)
+
+
+def _is_provider_refusal(e: Exception) -> bool:
+    if isinstance(e, _LOCAL_ERRORS):
+        return False
+    err_str = str(e).lower()
+    return "content_policy" in err_str or "moderation" in err_str or "safety" in err_str
+
+
 def _safe_resolve(base: Path, user_input: str) -> Path | None:
-    """Resolve a user-provided path relative to base and verify containment."""
+    """Resolve a user-provided path relative to base and verify containment.
+
+    Ancestry is checked on the resolved path (a sibling such as "output-private"
+    shares the string prefix "output" but is not inside it).
+    """
     try:
+        if Path(user_input).is_absolute():
+            return None
+        root = base.resolve()
         resolved = (base / user_input).resolve()
     except (OSError, ValueError):
         return None
-    if not str(resolved).startswith(str(base.resolve())):
+    if resolved == root or not resolved.is_relative_to(root):
         return None
     return resolved
 
@@ -435,9 +460,18 @@ def api_estimate():
 
 def _generation_worker(job_id: str, char: dict, variations: list[dict],
                        gen_settings: dict, ref_paths: list[str]):
-    """Run image generation in a background thread."""
+    """Run image generation in a background thread, one job at a time."""
     try:
-        _generation_worker_inner(job_id, char, variations, gen_settings, ref_paths)
+        if not _output_lock.acquire(blocking=False):
+            with _jobs_lock:
+                if job_id in _jobs:
+                    _jobs[job_id]["status"] = "queued"
+                    _jobs[job_id]["log"].append("Waiting for the running job to finish")
+            _output_lock.acquire()
+        try:
+            _generation_worker_inner(job_id, char, variations, gen_settings, ref_paths)
+        finally:
+            _output_lock.release()
     except Exception as e:
         import traceback
         tb = traceback.format_exc()
@@ -505,7 +539,13 @@ def _generation_worker_inner(job_id: str, char: dict, variations: list[dict],
                   if isinstance(row, dict) and row.get("scene") and row.get("outfit")]
 
     jobs_to_run = []
-    for i, row in valid_rows:
+    skipped_categories = []
+    for i, row in list(valid_rows):
+        try:
+            safe_path_part(row.get("category") or "")
+        except ValueError:
+            skipped_categories.append(i + 1)
+            continue
         prompt = build_prompt(char, row)
         ph = prompt_hash(prompt)
         if manifest.has_hash(ph):
@@ -518,6 +558,9 @@ def _generation_worker_inner(job_id: str, char: dict, variations: list[dict],
             return
         _jobs[job_id]["total"] = total
         _jobs[job_id]["status"] = "running"
+        if skipped_categories:
+            _jobs[job_id]["log"].append(
+                f"Skipped row(s) {', '.join(map(str, skipped_categories))}: invalid category")
 
     if total == 0:
         with _jobs_lock:
@@ -525,11 +568,7 @@ def _generation_worker_inner(job_id: str, char: dict, variations: list[dict],
                 _jobs[job_id]["status"] = "completed"
         return
 
-    file_counter = max(
-        (int(k.split("_")[-1]) for k in manifest.data
-         if k != "_meta" and "_" in k and k.split("_")[-1].isdigit()),
-        default=0
-    ) + 1
+    file_counter = manifest.next_index()
 
     completed = 0
     failed = 0
@@ -540,12 +579,14 @@ def _generation_worker_inner(job_id: str, char: dict, variations: list[dict],
     for idx, row, prompt, ph in jobs_to_run:
         with _jobs_lock:
             if job_id not in _jobs or _jobs[job_id].get("cancelled"):
-                with _jobs_lock:
-                    if job_id in _jobs:
-                        _jobs[job_id]["status"] = "cancelled"
+                if job_id in _jobs:
+                    _jobs[job_id]["status"] = "cancelled"
                 return
 
         for attempt in range(MAX_RETRIES):
+            edit_moderation_fail = False
+            gen_mode = "fal" if using_fal else ("edit" if use_refs else "generate")
+            generated_paths = []
             try:
                 category = row.get("category", "general")
 
@@ -554,11 +595,10 @@ def _generation_worker_inner(job_id: str, char: dict, variations: list[dict],
                         prompt=prompt, model=model, size=size,
                         fmt=fmt, num_images=n_per_row, safety=False,
                     )
-                    generated_paths = []
                     for img_i, url in enumerate(urls):
-                        fid = file_counter
-                        file_counter += 1
-                        filepath = save_image_from_url(url, output_dir, char_name, category, fid, actual_fmt)
+                        filepath = save_image_from_url(url, output_dir, char_name, category, file_counter, actual_fmt)
+                        fid = file_index_of(filepath)
+                        file_counter = fid + 1
                         generated_paths.append(str(filepath.relative_to(output_dir)))
                         key = f"{char_name}_{fid:04d}"
                         manifest.add(key, {
@@ -572,7 +612,6 @@ def _generation_worker_inner(job_id: str, char: dict, variations: list[dict],
                             "batch_id": None,
                         })
                 else:
-                    edit_moderation_fail = False
                     if use_refs:
                         ref_prompt = prompt + (
                             "\n\nThis is the same person shown in the reference images. "
@@ -620,12 +659,12 @@ def _generation_worker_inner(job_id: str, char: dict, variations: list[dict],
                         result = client.images.generate(**params)
 
                     images_b64 = [img.b64_json for img in result.data if img.b64_json]
-                    generated_paths = []
-                    gen_mode = "generate (fallback)" if edit_moderation_fail else ("edit" if use_refs else "generate")
+                    if edit_moderation_fail:
+                        gen_mode = "generate (fallback)"
                     for img_i, b64 in enumerate(images_b64):
-                        fid = file_counter
-                        file_counter += 1
-                        filepath = save_image(b64, output_dir, char_name, category, fid, fmt)
+                        filepath = save_image(b64, output_dir, char_name, category, file_counter, fmt)
+                        fid = file_index_of(filepath)
+                        file_counter = fid + 1
                         generated_paths.append(str(filepath.relative_to(output_dir)))
                         key = f"{char_name}_{fid:04d}"
                         manifest.add(key, {
@@ -651,8 +690,18 @@ def _generation_worker_inner(job_id: str, char: dict, variations: list[dict],
                 break
 
             except Exception as e:
-                err_str = str(e).lower()
-                if "content_policy" in err_str or "moderation" in err_str or "safety" in err_str:
+                if generated_paths:
+                    # The provider call succeeded and images were saved; a later
+                    # local error must not count a refusal or pay for a retry.
+                    completed += 1
+                    with _jobs_lock:
+                        if job_id in _jobs:
+                            _jobs[job_id]["completed"] = completed
+                            _jobs[job_id]["last_images"] = generated_paths
+                            _jobs[job_id]["log"].append(f"Row {idx+1}: saved, then {type(e).__name__}")
+                    print(f"[GEN] Row {idx+1}: images saved, then a local error - {str(e)[:150]}")
+                    break
+                if _is_provider_refusal(e):
                     failed += 1
                     with _jobs_lock:
                         if job_id in _jobs:
@@ -700,7 +749,7 @@ def api_start_generation():
 
     ref_dir = REFS_DIR / char_id
     ref_paths = []
-    if ref_dir.exists() and str(ref_dir.resolve()).startswith(str(REFS_DIR.resolve())):
+    if ref_dir.exists() and ref_dir.resolve().is_relative_to(REFS_DIR.resolve()):
         ref_paths = [str(f) for f in sorted(ref_dir.iterdir())
                      if f.suffix.lower() in ALLOWED_IMG_EXT]
 
@@ -760,7 +809,7 @@ def api_gallery(name):
     images = []
     for f in sorted(char_dir.rglob("*")):
         if f.suffix.lower() in ALLOWED_IMG_EXT:
-            if not str(f.resolve()).startswith(str(DEFAULT_OUTPUT_DIR.resolve())):
+            if not f.resolve().is_relative_to(DEFAULT_OUTPUT_DIR.resolve()):
                 continue
             rel = f.relative_to(DEFAULT_OUTPUT_DIR)
             category = f.parent.name if f.parent != char_dir else "general"
@@ -776,9 +825,10 @@ def api_gallery(name):
 @app.route("/api/gallery/image/<path:filepath>")
 def api_serve_gallery_image(filepath):
     resolved = _safe_resolve(DEFAULT_OUTPUT_DIR, filepath)
-    if not resolved or not resolved.exists():
+    if not resolved or not resolved.is_file():
         return jsonify({"error": "Not found"}), 404
-    return send_from_directory(str(resolved.parent), resolved.name)
+    root = DEFAULT_OUTPUT_DIR.resolve()
+    return send_from_directory(str(root), resolved.relative_to(root).as_posix())
 
 
 @app.route("/api/gallery/<name>/delete", methods=["POST"])

@@ -18,27 +18,27 @@ Open **http://localhost:5000** in your browser.
 
 ## CLI (Advanced)
 
-The CLI tool works for scripted/batch workflows:
+The CLI tool works for scripted/batch workflows. It uses OpenAI models only (fal.ai is in the web app), and relative `-c` / `-v` paths are read from the `characters/` folder:
 
 ```bash
-# Preview prompts
-python batch_image_generator.py parallel -c characters/example_character.json -v characters/example_variations.csv --preview 3
+# Preview prompts (no API call)
+python batch_image_generator.py parallel -c example_character.json -v example_variations.csv --preview 3
 
 # Generate (parallel, real-time)
-python batch_image_generator.py parallel -c characters/example_character.json -v characters/example_variations.csv -y
+python batch_image_generator.py parallel -c example_character.json -v example_variations.csv -y
 
 # Generate (batch, 50% cheaper via OpenAI Batch API)
-python batch_image_generator.py batch -c characters/example_character.json -v characters/example_variations.csv -y
+python batch_image_generator.py batch -c example_character.json -v example_variations.csv -y
 
 # Check batch status
-python batch_image_generator.py batch-status -c characters/example_character.json -v characters/example_variations.csv
+python batch_image_generator.py batch-status -c example_character.json -v example_variations.csv
 ```
 
 ## Reference Images
 
 When reference images are uploaded for a character, generation automatically:
-- Uses the OpenAI Image **Edit** API instead of Generations
-- Enables **high input fidelity** for better identity preservation
+- Uses the OpenAI Image **Edit** API instead of Generations (OpenAI models only)
 - Appends identity-lock instructions to each prompt
+- Falls back to Generations if the reference images are refused by moderation
 
 For best results, upload 3-8 reference images showing the character from different angles, expressions, and lighting conditions.

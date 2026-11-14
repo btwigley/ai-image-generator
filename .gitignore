@@ -4,6 +4,8 @@ __pycache__/
 *.pyc
 .DS_Store
 Thumbs.db
-output/*.png
-output/*.webp
-output/*.jpg
+output/**/*.png
+output/**/*.webp
+output/**/*.jpg
+output/**/*.jpeg
+output/manifest.json.tmp
